@@ -836,6 +836,41 @@ module Commands = struct
                startup *))
         $ Cli.Flags.Global.options)
 
+  let wasm
+      options
+      link_modules
+      output
+      optimize
+      check_invariants
+      avoid_exceptions
+      closure_conversion =
+    let prg, _, type_ordering =
+      Passes.scalc options ~link_modules ~optimize ~check_invariants
+        ~avoid_exceptions ~closure_conversion
+    in
+
+    let output_file, with_output =
+      get_output_format options ~ext:".py" output
+    in
+    Message.emit_debug "Compiling program into Wasm...";
+    Message.emit_debug "Writing to %s..."
+      (Option.value ~default:"stdout" output_file);
+    with_output @@ fun fmt -> Scalc.To_wasm.format_program fmt prg type_ordering
+
+  let wasm_cmd =
+    Cmd.v
+      (Cmd.info "wasm"
+         ~doc:"Generates a Wasm translation of the Catala program.")
+      Term.(
+        const wasm
+        $ Cli.Flags.Global.options
+        $ Cli.Flags.link_modules
+        $ Cli.Flags.output
+        $ Cli.Flags.optimize
+        $ Cli.Flags.check_invariants
+        $ Cli.Flags.avoid_exceptions
+        $ Cli.Flags.closure_conversion)
+
   let commands =
     [
       interpret_cmd;
@@ -854,6 +889,7 @@ module Commands = struct
       scalc_cmd;
       exceptions_cmd;
       pygmentize_cmd;
+      wasm_cmd;
     ]
 end
 
