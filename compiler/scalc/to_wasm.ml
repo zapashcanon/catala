@@ -47,9 +47,9 @@ let pop2 = function
   | _ -> assert false
 
 let rec collect_locals_block b =
-  List.map (fun s -> Catala_utils.Mark.remove s |> collect_inner_func_def_statement) b
+  List.map (fun s -> Catala_utils.Mark.remove s |> collect_locals_statement) b
   |> List.flatten
-and collect_inner_func_def_statement = function
+and collect_locals_statement = function
   | SInnerFuncDef _ -> []
   | SLocalDecl (name, _typ) ->
     let name = Some (string_of_mvar name) in
@@ -62,8 +62,12 @@ and collect_inner_func_def_statement = function
   | SIfThenElse (_, b1, b2) ->
     collect_locals_block b1 @ collect_locals_block b2
   | SSwitch (_, _, cases) ->
-    List.map (fun (case_block, _payload_var) ->
-      collect_locals_block case_block)  cases
+    List.map (fun (case_block, payload_var) ->
+      let name = Some (string_of_var payload_var) in
+      let typ = Owi.Symbolic.Ref_type (No_null, Eq_ht) in
+      let v = name, typ in
+      let vs = collect_locals_block case_block in
+      v :: vs) cases
     |> List.flatten
   | SReturn _ -> []
   | SAssert _ -> []
@@ -246,7 +250,12 @@ let rec op (op : operator) args =
 and expression e =
   let open Owi.Symbolic in
   match Catala_utils.Mark.remove e with
-  | EVar v -> [Local_get (Symbolic (string_of_var v))]
+  | EVar v ->
+    let v = string_of_var v in
+    (* TODO: this is an horrible hack to replace some dead values by null, otherwise they appear as unbounded *)
+    if String.length v >= 10 && String.sub v 0 10 = "dead_value" then [ Ref_null Eq_ht ]
+    else
+      [Local_get (Symbolic  v)]
   | EFunc _ -> assert false
   | EStruct (es, _s) ->
     struct_tag
