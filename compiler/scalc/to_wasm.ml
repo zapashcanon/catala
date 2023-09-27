@@ -245,7 +245,8 @@ let rec op (op : operator) args =
   | Fold -> assert false
   | HandleDefault -> assert false
   | HandleDefaultOpt ->
-    (* TODO *) []
+    (* TODO: put args on the stack *)
+    [ Call (Symbolic "handle_default_opt") ]
 
 and expression e =
   let open Owi.Symbolic in
@@ -264,9 +265,10 @@ and expression e =
   | EStructFieldAccess (e, field, _) ->
     (* TODO: get the field properly *)
     let field = (Obj.magic field) in
-    expression e @ [
-      Ref_cast (No_null, Def_ht (Symbolic "block"))
-    ; Array_get (Raw (1 + field)) ]
+    expression e
+    @ [  Ref_cast (No_null, Def_ht (Symbolic "block"))
+      ; I32_const (Int32.of_int (1 + field))
+      ; Array_get (Symbolic "block") ]
   | EInj _ -> [] (* TODO *)
   | EArray es ->
     array_tag
@@ -323,7 +325,9 @@ let rec statement ctx s =
         Ref_cast (No_null, Def_ht (Symbolic "block"))
       ; Global_set (Symbolic "tmp_block")
       ; Global_get (Symbolic "tmp_block")
-      ; Array_get (Raw 0)
+      ; Ref_as_non_null
+      ; I32_const 0l
+      ; Array_get (Symbolic "block")
       ; Ref_cast (No_null, I31_ht)
       ; I31_get_u
       ; Global_set (Symbolic "tmp_switch_value") ;
@@ -337,7 +341,9 @@ let rec statement ctx s =
               [ (* the block has a single parameter,
                    we need to bind payload_var to it before entering the case_block *)
                 Global_get (Symbolic "tmp_block")
-              ; Array_get (Raw 1)
+              ; Ref_as_non_null
+              ; I32_const 1l
+              ; Array_get (Symbolic "block")
               ; Local_set (Symbolic (string_of_var payload_var))
               ] @ block ctx case_block  in
             [ (* if the tag match, we go to the case_code branch, otherwise we try other branches in acc *)
@@ -399,13 +405,15 @@ let program p : Owi.Symbolic.modul =
   let open Owi.Symbolic in
   let id = Some "catala_module" in
   let fields = [
-    (* the type of blocks, it's an array of eqref *)
-    MType [ Some "block", (Final, [], Def_array_t (Var, Val_storage_t (Ref_type (Null, Eq_ht)))) ]
+    (* runtime funcs *)
+    MImport { modul = "catala_runtime"; name = "handle_default_opt"; desc = Import_func (Some "handle_default_opt", bt_ret_eq) }
+  (* the type of blocks, it's an array of eqref *)
+  ; MType [ Some "block", (Final, [], Def_array_t (Var, Val_storage_t (Ref_type (No_null, Eq_ht)))) ]
   (* some temporary registers *)
   ; MGlobal {
-      id = Some "tmp_switch_value"
-    ; typ = Var, Num_type I32
-    ; init = [ I32_const 666l ] }
+    id = Some "tmp_switch_value"
+  ; typ = Var, Num_type I32
+  ; init = [ I32_const 666l ] }
   ; MGlobal {
     id = Some "tmp_block"
   ; typ = Var, Ref_type (Null, (Def_ht (Symbolic "block")))
