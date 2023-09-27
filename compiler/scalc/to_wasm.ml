@@ -20,7 +20,7 @@ let string_of_func_name = Format.asprintf "%a" Print.format_func_name
 let string_of_var var = Format.asprintf "%a" Print.format_var_name var
 let string_of_mvar var = string_of_var (Catala_utils.Mark.remove var)
 
-let bt_ret_eq = Owi.Symbolic.(Arg.Bt_raw (None, ([], [Ref_type (Null, Eq_ht)])))
+let bt_ret_eq = Owi.Symbolic.(Arg.Bt_raw (None, ([], [Ref_type (No_null, Eq_ht)])))
 let struct_tag = Owi.Symbolic.I32_const 654321l
 let array_tag = Owi.Symbolic.I32_const 765432l
 
@@ -202,12 +202,13 @@ and expression e =
   | EVar v ->
     let v = string_of_var v in
     (* TODO: this is an horrible hack to replace some dead values by null, otherwise they appear as unbounded *)
-    if String.length v >= 10 && String.sub v 0 10 = "dead_value" then [ Ref_null Eq_ht ]
+    if String.length v >= 10 && String.sub v 0 10 = "dead_value" then [ Call (Symbolic "dead_value") ]
     else
       [Local_get (Symbolic  v)]
   | EFunc _ -> assert false
   | EStruct (es, _s) ->
     struct_tag
+    :: I31_new
     :: (List.map (expression) es |> List.flatten)
     @ [ Array_new_fixed (Symbolic "block", (1 + List.length es)) ]
   | EStructFieldAccess (e, field, _) ->
@@ -220,6 +221,7 @@ and expression e =
   | EInj _ -> [] (* TODO *)
   | EArray es ->
     array_tag
+    :: I31_new
     :: (List.map (expression) es |> List.flatten)
     @ [ Array_new_fixed (Symbolic "block", (1 + List.length es)) ]
   | ELit l -> lit l
@@ -254,7 +256,7 @@ let rec statement ctx s =
     expression cond @ [
       Ref_cast (No_null, I31_ht)
     ; I31_get_u
-    ; If_else (None, Some bt_ret_eq, b1, b2)
+    ; If_else (Some "ite", Some bt_ret_eq, b1, b2)
     ]
   | SSwitch (e, enum_name, cases) ->
     let open Shared_ast in
@@ -293,12 +295,16 @@ let rec statement ctx s =
               ; I32_const 1l
               ; Array_get (Symbolic "block")
               ; Local_set (Symbolic (string_of_var payload_var))
-              ] @ block ctx case_block  in
+              ] @ block ctx case_block  @ [
+                (* returns unit *)
+                I32_const 0l;
+                I31_new
+              ] in
             [ (* if the tag match, we go to the case_code branch, otherwise we try other branches in acc *)
               Global_get (Symbolic "tmp_switch_value")
             ; I32_const tag
             ; I_relop (S32, Eq)
-            ; If_else (None, Some bt_ret_eq, case_code, acc)])
+            ; If_else (Some "switch", Some bt_ret_eq, case_code, acc)])
         (* Unreachable is the last branch we'll try,
            this happen when we've got a match failure,
            this should not happen in correctly typechecked code but Wasm doesn't know this... *)
@@ -314,7 +320,7 @@ let rec statement ctx s =
       I32_const 0l;
       I_relop (S32, Eq);
       (* TODO: fail in a better way *)
-      If_else (None, None, [ Unreachable ], [])
+      If_else (Some "assert", None, [ Unreachable ], [])
     ]
 and block ctx b = List.map (statement ctx) b |> List.flatten
 
@@ -354,7 +360,9 @@ let program p : Owi.Symbolic.modul =
   let id = Some "catala_module" in
   let fields = [
     (* runtime funcs *)
-    MImport { modul = "catala_runtime"; name = "eq"; desc = Import_func (Some "eq", (Owi.Symbolic.Arg.Bt_raw (None,
+    MImport { modul = "catala_runtime"; name = "dead_value"; desc = Import_func (Some "dead_value", (Owi.Symbolic.Arg.Bt_raw (None,
+      ([], [ Ref_type (No_null, Eq_ht) ])))) }
+  ;  MImport { modul = "catala_runtime"; name = "eq"; desc = Import_func (Some "eq", (Owi.Symbolic.Arg.Bt_raw (None,
       ([ None, Ref_type (No_null, Eq_ht);  None, Ref_type (No_null, Eq_ht) ], [ Ref_type (No_null, Eq_ht) ])))) }
   ; MImport { modul = "catala_runtime"; name = "handle_default_opt"; desc = Import_func (Some "handle_default_opt", bt_ret_eq) }
   (* the type of blocks, it's an array of eqref *)
