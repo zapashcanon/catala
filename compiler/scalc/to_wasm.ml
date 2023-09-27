@@ -46,6 +46,56 @@ let pop2 = function
   | [ x; y ] -> x, y
   | _ -> assert false
 
+let rec collect_locals_block b =
+  List.map (fun s -> Catala_utils.Mark.remove s |> collect_inner_func_def_statement) b
+  |> List.flatten
+and collect_inner_func_def_statement = function
+  | SInnerFuncDef _ -> []
+  | SLocalDecl (name, _typ) ->
+    let name = Some (string_of_mvar name) in
+    let typ = Owi.Symbolic.Ref_type (No_null, Eq_ht) in
+    [(name, typ)]
+  | SLocalDef _ -> []
+  | STryExcept (try_block, _, catch_block) ->
+    collect_locals_block try_block @ collect_locals_block catch_block
+  | SRaise _ -> []
+  | SIfThenElse (_, b1, b2) ->
+    collect_locals_block b1 @ collect_locals_block b2
+  | SSwitch (_, _, cases) ->
+    List.map (fun (case_block, _payload_var) ->
+      collect_locals_block case_block)  cases
+    |> List.flatten
+  | SReturn _ -> []
+  | SAssert _ -> []
+
+let rec collect_inner_func_def_item = function
+  | SVar _ -> []
+  | SFunc { func; _ } | SScope { scope_body_func = func; _ } ->
+    collect_inner_func_def_block func.func_body
+and collect_inner_func_def_block b =
+  List.fold_left (fun acc s -> collect_inner_func_def_statement (Catala_utils.Mark.remove s) @ acc ) [] b
+and collect_inner_func_def_statement = function
+  | SInnerFuncDef ((var, _typ), func) ->
+    (* TODO: convert the varname into a funcname *)
+    let var = Obj.magic var in
+    let f = SFunc { var; func } in
+    let fs = collect_inner_func_def_block func.func_body in
+    f :: fs
+  | SLocalDecl _ -> []
+  | SLocalDef _ -> []
+  | STryExcept (try_block, _, catch_block) ->
+    collect_inner_func_def_block try_block @ collect_inner_func_def_block catch_block
+  | SRaise _ -> []
+  | SIfThenElse (_, b1, b2) ->
+    collect_inner_func_def_block b1 @ collect_inner_func_def_block b2
+  | SSwitch (_, _, cases) ->
+    List.map (fun (case_block, _payload_var) ->
+      collect_inner_func_def_block case_block) cases
+    |> List.flatten
+  | SReturn _ -> []
+  | SAssert _ -> []
+
+
 let rec op (op : operator) args =
   let open Owi.Symbolic in
   match op with
@@ -57,7 +107,7 @@ let rec op (op : operator) args =
   | FirstDayOfMonth -> assert false
   | LastDayOfMonth -> assert false
   (* * polymorphic *)
-  | Length -> [] (* TODO *)
+  | Length -> assert false
   | Log _ -> assert false
   | ToClosureEnv -> assert false
   | FromClosureEnv -> assert false
@@ -136,9 +186,9 @@ let rec op (op : operator) args =
         ])
       ])
     ]
-  | Map -> (* TODO *) []
+  | Map -> assert false
   | Concat -> assert false
-  | Filter -> (* TODO *) []
+  | Filter -> assert false
   (* * overloaded *)
   | Add_int_int -> assert false
   | Add_rat_rat -> assert false
@@ -187,10 +237,11 @@ let rec op (op : operator) args =
   | Eq_dat_dat -> assert false
   (* ternary *)
   (* * polymorphic *)
-  | Reduce -> [] (* TODO *)
+  | Reduce -> assert false
   | Fold -> assert false
   | HandleDefault -> assert false
-  | HandleDefaultOpt -> [] (* TODO *)
+  | HandleDefaultOpt ->
+    (* TODO *) []
 
 and expression e =
   let open Owi.Symbolic in
@@ -219,18 +270,21 @@ and expression e =
 
 let rec statement ctx s =
   match Catala_utils.Mark.remove s with
-  | SInnerFuncDef _ ->
-    (* as we performed closure conversion, there's no inner function anymore *)
-    (* TODO *)
+  | SInnerFuncDef _ -> []
+  (* as we performed closure conversion, there's no inner function anymore *)
+  (* TODO: actually they still seem to be present, so we extract them with collect_inner_func_def_item
+     before and ignore them here... *)
+  | SLocalDecl _ ->
+    (* they have been collected and added to the function if needed in collect_locals *)
     []
-  | SLocalDecl _ -> []
   | SLocalDef (v, e) ->
-    expression e
-    @ [
-      (let open Owi.Symbolic in
-        Local_set (Symbolic (string_of_mvar v)));
-    ]
-  | STryExcept _ -> assert false
+    let e = expression e in
+    let v = string_of_mvar v in
+    let v = Owi.Symbolic.Local_set (Symbolic v) in
+    e @ [ v ]
+  | STryExcept _ ->
+    (* we use --avoid_exceptions so we don't have try ... catch block anymore*)
+    assert false
   | SRaise _ ->
     (* TODO: fail in a better way *)
     (* we use --avoid_exceptions so this can only be a fatal error *)
@@ -301,22 +355,12 @@ let rec statement ctx s =
     ]
 and block ctx b = List.map (statement ctx) b |> List.flatten
 
-let collect_locals b =
-  List.map Catala_utils.Mark.remove b
-  |> List.filter_map (function
-    | SLocalDecl (name, _typ) ->
-      let name = Some (string_of_mvar name) in
-      let typ = Owi.Symbolic.Ref_type (No_null, Eq_ht) in
-      Some (name, typ)
-    | _ -> None)
-
-let item ctx item : Owi.Symbolic.module_field =
-  match item with
+and item ctx = function
   | SVar _ ->
     Format.eprintf "TODO (SVar)@\n";
     assert false
   | SFunc { var = func_name; func }
-  | SScope { scope_body_var = func_name; scope_body_func = func; _ } ->
+  | SScope { scope_body_var = func_name; scope_body_func = func; _ } as i->
     let func_params = func.func_params in
     let func_body = func.func_body in
     let open Owi.Types in
@@ -330,15 +374,17 @@ let item ctx item : Owi.Symbolic.module_field =
         func_params
     in
     (* we need to collect the list of locals required by the code to declare them beforehand *)
-    let locals = collect_locals func_body in
+    let locals = collect_locals_block func_body in
     let body = block ctx func_body in
+    (* we need to collect the inner functions and to lift them outside *)
+    let inner_funcs = collect_inner_func_def_item i |> List.map (item ctx) |> List.flatten in
     (* each function returns one and exactly one eqref *)
     let type_f = Arg.Bt_raw (None, (params, [Ref_type (No_null, Eq_ht)])) in
     let func = { id; body; locals; type_f } in
-    MFunc func
+    MFunc func :: inner_funcs
 
 let code_items ctx code_items : Owi.Symbolic.module_field list =
-  List.map (item ctx) code_items
+  List.map (item ctx) code_items |> List.flatten
 
 let program p : Owi.Symbolic.modul =
   let open Owi.Symbolic in
@@ -370,7 +416,4 @@ let format_program
     (p : Ast.program)
     (_type_ordering : Scopelang.Dependency.TVertex.t list) : unit =
   let modul = program p in
-  Format.fprintf fmt
-    ";; This file has been generated by the Catala compiler, do not edit!@\n\n\
-     %a"
-    Owi.Symbolic.Pp.modul modul
+  Owi.Symbolic.Pp.modul fmt modul
