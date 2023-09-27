@@ -137,59 +137,7 @@ let rec op (op : operator) args =
     let x, y = pop2 args in
     let x = expression x in
     let y = expression y in
-    (* we store x and y *)
-    x @ [ Global_set (Symbolic "tmp_block") ]
-    @ y @ [ Global_set (Symbolic "tmp_block2") ]
-    (* we start to check if they are null *)
-    @ [ Global_get (Symbolic "tmp_block"); Ref_is_null; If_else (None, Some bt_ret_eq, [
-      (* x is null, we just need to check if y is null too *)
-      Global_get (Symbolic "tmp_block2")
-    ; Ref_is_null
-    ; I31_new ],
-      (* x is not null, we check if it's an i31 *)
-      [ Block (Some "eq", Some bt_ret_eq, [
-          Block (Some "eq_i31_case", Some bt_ret_eq, [
-            Global_get (Symbolic "tmp_block")
-          ; Br_on_cast_fail (Symbolic "eq_i31_case", No_null, I31_ht)
-          (* x is an i31, let's see if y too *)
-          ; Block (Some "eq_i31_case_yes", Some bt_ret_eq, [
-            Global_get (Symbolic "tmp_block2")
-          ; Br_on_cast_fail (Symbolic "eq_i31_case_yes", No_null, I31_ht)
-          (* they both are int, we check if they're equal *)
-          ; I31_get_s
-          ; I31_get_s
-          ; I_relop (S32, Eq)
-          ; I31_new
-          ; Br (Symbolic "eq")
-          ])
-          (* y is not an i31, they're not equal *)
-          ; I32_const 0l
-          ; I31_new
-          ; Br (Symbolic "eq")
-          ])
-        (* x is not an i31, we check if it's a block *)
-        ; Block (Some "eq_block_case", Some bt_ret_eq, [
-            Global_get (Symbolic "tmp_block")
-          ; Br_on_cast_fail (Symbolic "eq_block_case", No_null, Def_ht (Symbolic "block"))
-          (* x is a block, let's see if y too *)
-          ; Block (Some "eq_block_case_yes", Some bt_ret_eq, [
-            Global_get (Symbolic "tmp_block2")
-          ; Br_on_cast_fail (Symbolic "eq_block_case_yes", No_null, I31_ht)
-          (* they both are block, we check if they're equal *)
-          (* TODO: check the tag for a quick failure in case of not equal types, then: *)
-          (* TODO: recursive call on all fields *)
-          ; Unreachable
-          ])
-          (* y is not a block, they're not equal *)
-          ; I32_const 0l
-          ; I31_new
-          ; Br (Symbolic "eq")
-          ])
-        (* something is wrong, they are not null/i31/block and we shouldn't have any other kind of value *)
-        ; Unreachable
-        ])
-      ])
-    ]
+    x @ y @ [ Call (Symbolic "eq") ]
   | Map -> assert false
   | Concat -> assert false
   | Filter -> assert false
@@ -406,7 +354,9 @@ let program p : Owi.Symbolic.modul =
   let id = Some "catala_module" in
   let fields = [
     (* runtime funcs *)
-    MImport { modul = "catala_runtime"; name = "handle_default_opt"; desc = Import_func (Some "handle_default_opt", bt_ret_eq) }
+    MImport { modul = "catala_runtime"; name = "eq"; desc = Import_func (Some "eq", (Owi.Symbolic.Arg.Bt_raw (None,
+      ([ None, Ref_type (No_null, Eq_ht);  None, Ref_type (No_null, Eq_ht) ], [ Ref_type (No_null, Eq_ht) ])))) }
+  ; MImport { modul = "catala_runtime"; name = "handle_default_opt"; desc = Import_func (Some "handle_default_opt", bt_ret_eq) }
   (* the type of blocks, it's an array of eqref *)
   ; MType [ Some "block", (Final, [], Def_array_t (Var, Val_storage_t (Ref_type (No_null, Eq_ht)))) ]
   (* some temporary registers *)
