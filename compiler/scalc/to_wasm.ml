@@ -132,8 +132,6 @@ let rec op (op : operator) args =
   | Xor -> assert false
   (* * polymorphic *)
   | Eq ->
-    (* TODO: change the type of block to accept one parameter *)
-    (* TODO: make this a proper function to be able to make a recursive call *)
     let x, y = pop2 args in
     let x = expression x in
     let y = expression y in
