@@ -53,7 +53,7 @@ and collect_locals_statement = function
   | SInnerFuncDef _ -> []
   | SLocalDecl (name, _typ) ->
     let name = Some (string_of_mvar name) in
-    let typ = Owi.Symbolic.Ref_type (No_null, Eq_ht) in
+    let typ = Owi.Symbolic.Ref_type (Null, Eq_ht) in
     [(name, typ)]
   | SLocalDef _ -> []
   | STryExcept (try_block, _, catch_block) ->
@@ -142,7 +142,11 @@ let rec op (op : operator) args =
   | Concat -> assert false
   | Filter -> assert false
   (* * overloaded *)
-  | Add_int_int -> assert false
+  | Add_int_int ->
+    let x, y = pop2 args in
+    let x = expression x in
+    let y = expression y in
+    x @ [ Ref_cast (No_null, I31_ht); I31_get_s ] @ y @ [ Ref_cast (No_null, I31_ht); I31_get_s; I_binop (S32, Add); I31_new ]
   | Add_rat_rat -> assert false
   | Add_mon_mon -> assert false
   | Add_dat_dur _ -> assert false
@@ -204,7 +208,7 @@ and expression e =
     (* TODO: this is an horrible hack to replace some dead values by null, otherwise they appear as unbounded *)
     if String.length v >= 10 && String.sub v 0 10 = "dead_value" then [ Call (Symbolic "dead_value") ]
     else
-      [Local_get (Symbolic  v)]
+      [Local_get (Symbolic  v); Ref_as_non_null]
   | EFunc _ -> assert false
   | EStruct (es, _s) ->
     struct_tag
@@ -218,7 +222,10 @@ and expression e =
     @ [  Ref_cast (No_null, Def_ht (Symbolic "block"))
       ; I32_const (Int32.of_int (1 + field))
       ; Array_get (Symbolic "block") ]
-  | EInj _ -> [] (* TODO *)
+  | EInj (e, _cons, _enum_name) ->
+    expression e
+    @ [ Ref_cast (No_null, Def_ht (Symbolic "block")) ]
+  (* TODO: properly do the injection *)
   | EArray es ->
     array_tag
     :: I31_new
@@ -339,7 +346,7 @@ and item ctx = function
     let params =
       List.map
         (fun (var, _typ) ->
-            Some (string_of_mvar var), Ref_type (No_null, Eq_ht))
+            Some (string_of_mvar var), Ref_type (Null, Eq_ht))
         func_params
     in
     (* we need to collect the list of locals required by the code to declare them beforehand *)
